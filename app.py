@@ -1,10 +1,9 @@
 import streamlit as st
 import datetime as dt
-import pickle
-import os
 from collections import defaultdict
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
 # -------------------
 # CONFIGURATION
@@ -38,29 +37,8 @@ TICKET_TYPES = {
 }
 
 # -------------------
-# GOOGLE AUTH & CALENDAR
+# CACHED FUNCTIONS
 # -------------------
-def get_calendar_service():
-    creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        creds = flow.run_local_server(
-            port=8080,
-            open_browser=False,
-            authorization_prompt_message="Please visit this URL to authorize:\n{url}",
-            success_message="Authentication complete. You can close this window.",
-            redirect_uri_trusted=True,
-        )
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-
-    return build('calendar', 'v3', credentials=creds)
-
-
 @st.cache_data
 def get_london_travel_days(_service, calendar_id='primary', search_text="James in London"):
     now = dt.datetime.now(dt.timezone.utc)
@@ -91,7 +69,6 @@ def recommend_next_ticket_limited(travel_dates, ticket_types):
     if not travel_dates:
         return None, {}
 
-    # Convert date strings to datetime.date objects
     travel_dates = sorted([dt.datetime.strptime(d, "%Y-%m-%d").date() for d in travel_dates])
     first_trip = travel_dates[0]
 
@@ -99,11 +76,8 @@ def recommend_next_ticket_limited(travel_dates, ticket_types):
 
     for ticket_key, ticket in ticket_types.items():
         validity_end = first_trip + dt.timedelta(days=ticket["validity_days"])
-
-        # Only include trips that fall within the ticket's validity window
         covered_trips = [d for d in travel_dates if first_trip <= d < validity_end]
 
-        # Respect max trips if defined
         if ticket["max_trips"] != float('inf'):
             covered_trips = covered_trips[:int(ticket["max_trips"])]
 
@@ -119,23 +93,58 @@ def recommend_next_ticket_limited(travel_dates, ticket_types):
         }
 
     best_ticket = min(results.items(), key=lambda x: x[1]["cost_per_trip"])
-
     return best_ticket, results
-
 
 # -------------------
 # STREAMLIT UI
 # -------------------
-st.set_page_config(page_title="Train Ticket Optimiser", layout="centered")
-
+st.set_page_config(page_title="Train Ticket Optimiser", page_icon="favicon.png", layout="centered")
 st.markdown("<h1 style='text-align: center;'>🚆 Train Ticket Optimiser</h1>", unsafe_allow_html=True)
 st.markdown("##### Smart, simple savings on travel — based on your Google Calendar 📅")
-
 st.divider()
 
-# ✅ Make sure the logic runs before using travel_days, best, or options
-try:
-    service = get_calendar_service()
+# -------------------
+# AUTH FLOW
+# -------------------
+if "credentials" not in st.session_state:
+    st.subheader("🔐 Google Login Required")
+
+    if "auth_url" not in st.session_state:
+        flow = Flow.from_client_secrets_file(
+            'client_secret_web.json',
+            scopes=SCOPES,
+            redirect_uri=st.secrets["redirect_uri"]
+        )
+        auth_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+        st.session_state["auth_url"] = auth_url
+        st.session_state["flow_state"] = state
+
+    st.markdown(f"[Click here to sign in with Google]({st.session_state['auth_url']})")
+    auth_code = st.text_input("Paste the code from the URL after authorizing:")
+
+    if auth_code:
+        try:
+            # ✅ Recreate Flow with same state
+            flow = Flow.from_client_secrets_file(
+                'client_secret_web.json',
+                scopes=SCOPES,
+                redirect_uri=st.secrets["redirect_uri"],
+                state=st.session_state["flow_state"]
+            )
+            flow.fetch_token(code=auth_code)
+            creds = flow.credentials
+            st.session_state["credentials"] = creds
+            st.success("✅ Logged in successfully!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Authentication failed: {e}")
+
+else:
+    creds = st.session_state["credentials"]
+    service = build('calendar', 'v3', credentials=creds)
     travel_days = get_london_travel_days(service)
 
     if travel_days:
@@ -144,27 +153,22 @@ try:
         st.subheader("📍 Upcoming London Trips")
         st.success(f"Found **{len(travel_days)}** upcoming 'James in London' days.")
 
-
         def format_pretty_date(date_str):
             date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
             day = date_obj.day
             suffix_str = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
             return date_obj.strftime("%a ") + f"{day}{suffix_str} " + date_obj.strftime("%B")
 
-
         def group_dates_by_week(date_list):
             grouped = defaultdict(list)
             for date_str in date_list:
                 date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
-                year_week = date_obj.isocalendar()[:2]  # (year, week_number)
+                year_week = date_obj.isocalendar()[:2]
                 grouped[year_week].append(date_str)
             return grouped
 
-
-        # Format & group travel days
         grouped_weeks = group_dates_by_week(travel_days)
 
-        # Display each week in a row
         for (year, week_num), dates in sorted(grouped_weeks.items()):
             pretty_dates = [format_pretty_date(d) for d in sorted(dates)]
             with st.container():
@@ -198,7 +202,5 @@ try:
     else:
         st.info("No upcoming 'James in London' trips found.")
 
-except Exception as e:
-    st.error(f"An error occurred: {e}")
 
 
