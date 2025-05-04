@@ -48,11 +48,18 @@ def get_calendar_service():
 
     if not creds or not creds.valid:
         flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        creds = flow.run_console()
+        creds = flow.run_local_server(
+            port=8080,
+            open_browser=False,
+            authorization_prompt_message="Please visit this URL to authorize:\n{url}",
+            success_message="Authentication complete. You can close this window.",
+            redirect_uri_trusted=True,
+        )
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
 
     return build('calendar', 'v3', credentials=creds)
+
 
 @st.cache_data
 def get_london_travel_days(_service, calendar_id='primary', search_text="James in London"):
