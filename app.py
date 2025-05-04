@@ -4,7 +4,7 @@ from collections import defaultdict
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-
+import toml
 # -------------------
 # CONFIGURATION
 # -------------------
@@ -110,11 +110,19 @@ if "credentials" not in st.session_state:
     st.subheader("🔐 Google Login Required")
 
     if "auth_url" not in st.session_state:
+        # 🔓 Load the redirect_uri from the flat secrets.toml
+        with open("secrets.toml", "r") as f:
+            secrets = toml.load(f)
+
+        redirect_uri = secrets["redirect_uri"]
+
+        # ✅ Now create the flow
         flow = Flow.from_client_secrets_file(
             'client_secret_web.json',
             scopes=SCOPES,
-            redirect_uri=st.secrets["redirect_uri"]
+            redirect_uri=redirect_uri
         )
+
         auth_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true'
