@@ -3,9 +3,21 @@ import datetime as dt
 from collections import defaultdict
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-import toml
 
+import toml
+import base64
+
+# Serve the icon directly if accessed with ?icon=1
+params = st.query_params
+if "icon" in params:
+    with open("apple-touch-icon.png", "rb") as f:
+        img_bytes = f.read()
+    b64 = base64.b64encode(img_bytes).decode()
+    st.markdown(
+        f"<img src='data:image/png;base64,{b64}' width='512'>",
+        unsafe_allow_html=True
+    )
+    st.stop()
 # -------------------
 # CONFIGURATION
 # -------------------

@@ -1,0 +1,13 @@
+# Don't track secrets
+client_secret_web.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
