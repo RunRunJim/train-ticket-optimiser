@@ -5,39 +5,20 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 import toml
+
 # -------------------
 # CONFIGURATION
 # -------------------
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 TICKET_TYPES = {
-    "standard_return": {
-        "name": "Standard Return",
-        "price": 49.50,
-        "validity_days": 1,
-        "max_trips": 1
-    },
-    "weekly": {
-        "name": "Weekly Ticket",
-        "price": 145.40,
-        "validity_days": 7,
-        "max_trips": float('inf')
-    },
-    "monthly": {
-        "name": "Monthly Ticket",
-        "price": 558.40,
-        "validity_days": 30,
-        "max_trips": float('inf')
-    },
-    "flex": {
-        "name": "Flex Ticket (8 Trips)",
-        "price": 346.50,
-        "validity_days": 28,
-        "max_trips": 8
-    }
+    "standard_return": {"name": "Standard Return", "price": 49.50, "validity_days": 1, "max_trips": 1},
+    "weekly": {"name": "Weekly Ticket", "price": 145.40, "validity_days": 7, "max_trips": float('inf')},
+    "monthly": {"name": "Monthly Ticket", "price": 558.40, "validity_days": 30, "max_trips": float('inf')},
+    "flex": {"name": "Flex Ticket (8 Trips)", "price": 346.50, "validity_days": 28, "max_trips": 8}
 }
 
 # -------------------
-# CACHED FUNCTIONS
+# CALENDAR LOGIC
 # -------------------
 @st.cache_data
 def get_london_travel_days(_service, calendar_id='primary', search_text="James in London"):
@@ -62,9 +43,6 @@ def get_london_travel_days(_service, calendar_id='primary', search_text="James i
 
     return sorted(set(travel_days))
 
-# -------------------
-# RECOMMENDATION LOGIC
-# -------------------
 def recommend_next_ticket_limited(travel_dates, ticket_types):
     if not travel_dates:
         return None, {}
@@ -73,21 +51,19 @@ def recommend_next_ticket_limited(travel_dates, ticket_types):
     first_trip = travel_dates[0]
 
     results = {}
-
-    for ticket_key, ticket in ticket_types.items():
+    for ticket in ticket_types.values():
         validity_end = first_trip + dt.timedelta(days=ticket["validity_days"])
         covered_trips = [d for d in travel_dates if first_trip <= d < validity_end]
-
         if ticket["max_trips"] != float('inf'):
             covered_trips = covered_trips[:int(ticket["max_trips"])]
 
-        num_trips = len(covered_trips)
-        cost_per_trip = ticket["price"] / num_trips if num_trips > 0 else float('inf')
+        trips = len(covered_trips)
+        cost_per_trip = ticket["price"] / trips if trips > 0 else float('inf')
 
         results[ticket["name"]] = {
             "start_date": str(first_trip),
             "valid_until": str(validity_end - dt.timedelta(days=1)),
-            "trips_covered": num_trips,
+            "trips_covered": trips,
             "cost_per_trip": round(cost_per_trip, 2),
             "total_cost": ticket["price"]
         }
@@ -104,25 +80,24 @@ st.markdown("##### Smart, simple savings on travel — based on your Google Cale
 st.divider()
 
 # -------------------
-# AUTH FLOW
+# AUTH FLOW (Automatic)
 # -------------------
+params = st.query_params
+
 if "credentials" not in st.session_state:
     st.subheader("🔐 Google Login Required")
 
+    # Load redirect_uri manually from secrets.toml
+    with open("secrets.toml", "r") as f:
+        secrets = toml.load(f)
+    redirect_uri = secrets["redirect_uri"]
+
     if "auth_url" not in st.session_state:
-        # 🔓 Load the redirect_uri from the flat secrets.toml
-        with open("secrets.toml", "r") as f:
-            secrets = toml.load(f)
-
-        redirect_uri = secrets["redirect_uri"]
-
-        # ✅ Now create the flow
         flow = Flow.from_client_secrets_file(
             'client_secret_web.json',
             scopes=SCOPES,
             redirect_uri=redirect_uri
         )
-
         auth_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true'
@@ -130,25 +105,24 @@ if "credentials" not in st.session_state:
         st.session_state["auth_url"] = auth_url
         st.session_state["flow_state"] = state
 
-    st.markdown(f"[Click here to sign in with Google]({st.session_state['auth_url']})")
-    auth_code = st.text_input("Paste the code from the URL after authorizing:")
-
-    if auth_code:
+    # If Google redirected back with ?code= and ?state=
+    if "code" in params and "state" in params:
         try:
-            # ✅ Recreate Flow with same state
             flow = Flow.from_client_secrets_file(
                 'client_secret_web.json',
                 scopes=SCOPES,
-                redirect_uri=st.secrets["redirect_uri"],
+                redirect_uri=redirect_uri,
                 state=st.session_state["flow_state"]
             )
-            flow.fetch_token(code=auth_code)
+            flow.fetch_token(code=params["code"])
             creds = flow.credentials
             st.session_state["credentials"] = creds
             st.success("✅ Logged in successfully!")
             st.rerun()
         except Exception as e:
             st.error(f"Authentication failed: {e}")
+    else:
+        st.markdown(f"[Click here to sign in with Google]({st.session_state['auth_url']})")
 
 else:
     creds = st.session_state["credentials"]
@@ -164,8 +138,8 @@ else:
         def format_pretty_date(date_str):
             date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
             day = date_obj.day
-            suffix_str = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-            return date_obj.strftime("%a ") + f"{day}{suffix_str} " + date_obj.strftime("%B")
+            suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+            return date_obj.strftime("%a ") + f"{day}{suffix} " + date_obj.strftime("%B")
 
         def group_dates_by_week(date_list):
             grouped = defaultdict(list)
@@ -176,15 +150,13 @@ else:
             return grouped
 
         grouped_weeks = group_dates_by_week(travel_days)
-
         for (year, week_num), dates in sorted(grouped_weeks.items()):
-            pretty_dates = [format_pretty_date(d) for d in sorted(dates)]
+            pretty = [format_pretty_date(d) for d in sorted(dates)]
             with st.container():
                 st.markdown(f"**Week {week_num} ({year})**")
-                st.write(" | ".join(pretty_dates))
+                st.write(" | ".join(pretty))
 
         st.divider()
-
         st.subheader("💡 Recommended Ticket")
         with st.container(border=True):
             st.markdown(f"""
@@ -201,14 +173,12 @@ else:
         st.subheader("🔍 Other Ticket Options")
         for name, info in options.items():
             col1, col2, col3 = st.columns(3)
-            with col1:
-                st.markdown(f"**{name}**")
-            with col2:
-                st.markdown(f"£{info['total_cost']} / {info['trips_covered']} trips")
-            with col3:
-                st.markdown(f"£{info['cost_per_trip']} per trip")
+            col1.markdown(f"**{name}**")
+            col2.markdown(f"£{info['total_cost']} / {info['trips_covered']} trips")
+            col3.markdown(f"£{info['cost_per_trip']} per trip")
     else:
         st.info("No upcoming 'James in London' trips found.")
+
 
 
 
