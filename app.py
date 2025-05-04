@@ -80,32 +80,33 @@ def get_london_travel_days(_service, calendar_id='primary', search_text="James i
 # -------------------
 # RECOMMENDATION LOGIC
 # -------------------
-def recommend_next_ticket(travel_dates, ticket_types):
-    today = dt.datetime.now().date()
-    future_trips = sorted(
-        [dt.datetime.strptime(d, "%Y-%m-%d").date() for d in travel_dates if dt.datetime.strptime(d, "%Y-%m-%d").date() >= today]
-    )
+def recommend_next_ticket_limited(travel_dates, ticket_types):
+    if not travel_dates:
+        return None, {}
+
+    # Convert date strings to datetime.date objects
+    travel_dates = sorted([dt.datetime.strptime(d, "%Y-%m-%d").date() for d in travel_dates])
+    first_trip = travel_dates[0]
 
     results = {}
 
     for ticket_key, ticket in ticket_types.items():
-        if not future_trips:
-            continue
-
-        first_trip = future_trips[0]
         validity_end = first_trip + dt.timedelta(days=ticket["validity_days"])
-        covered_trips = [d for d in future_trips if first_trip <= d < validity_end]
 
+        # Only include trips that fall within the ticket's validity window
+        covered_trips = [d for d in travel_dates if first_trip <= d < validity_end]
+
+        # Respect max trips if defined
         if ticket["max_trips"] != float('inf'):
-            covered_trips = covered_trips[:ticket["max_trips"]]
+            covered_trips = covered_trips[:int(ticket["max_trips"])]
 
-        total_trips = len(covered_trips)
-        cost_per_trip = ticket["price"] / total_trips if total_trips > 0 else float('inf')
+        num_trips = len(covered_trips)
+        cost_per_trip = ticket["price"] / num_trips if num_trips > 0 else float('inf')
 
         results[ticket["name"]] = {
             "start_date": str(first_trip),
             "valid_until": str(validity_end - dt.timedelta(days=1)),
-            "trips_covered": total_trips,
+            "trips_covered": num_trips,
             "cost_per_trip": round(cost_per_trip, 2),
             "total_cost": ticket["price"]
         }
@@ -113,6 +114,7 @@ def recommend_next_ticket(travel_dates, ticket_types):
     best_ticket = min(results.items(), key=lambda x: x[1]["cost_per_trip"])
 
     return best_ticket, results
+
 
 # -------------------
 # STREAMLIT UI
@@ -130,7 +132,7 @@ try:
     travel_days = get_london_travel_days(service)
 
     if travel_days:
-        best, options = recommend_next_ticket(travel_days, TICKET_TYPES)
+        best, options = recommend_next_ticket_limited(travel_days, TICKET_TYPES)
 
         st.subheader("📍 Upcoming London Trips")
         st.success(f"Found **{len(travel_days)}** upcoming 'James in London' days.")
